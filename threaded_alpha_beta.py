@@ -1,8 +1,9 @@
 import numpy as np
 from collections import defaultdict
-
+import concurrent.futures
+from concurrent.futures import ThreadPoolExecutor
 class ThreadMemory:
-    def init(self):
+    def __init__(self): 
         self.transposition_table = {}
         self.killer_moves = [[] for _ in range(100)]
         self.history = defaultdict(int)
@@ -11,7 +12,7 @@ class ThreadMemory:
         self.opening_book[empty_hash] = 3
 
 class ThreadEnhancedAI:
-    def init(self, player_number, max_depth=8):
+    def __init__(self, player_number, max_depth=8): 
         self.player = player_number
         self.max_depth = max_depth
         self.memory = ThreadMemory()
@@ -126,7 +127,9 @@ class ThreadEnhancedAI:
         center = board.width // 2
         ordered = sorted(moves, key=lambda x: abs(x - center))
         
-        killer_moves = self.memory.killer_moves[self.max_depth]
+        depth_index = min(self.max_depth, len(self.memory.killer_moves) - 1)
+        killer_moves = self.memory.killer_moves[depth_index]
+        
         for killer in killer_moves:
             if killer in ordered:
                 ordered.remove(killer)
@@ -218,7 +221,7 @@ class ThreadEnhancedAI:
     
     def _copy_board(self, board):
         class SimpleBoard:
-            def init(self, original):
+            def __init__(self, original):  
                 self.width = original.width
                 self.height = original.height
                 self.board = original.board.copy()
@@ -240,4 +243,72 @@ class ThreadEnhancedAI:
         return SimpleBoard(board)
     
     def reset_memory(self):
-        self.memory=ThreadMemory()
+        self.memory = ThreadMemory()  
+class ThreadedEnhancedAI(ThreadEnhancedAI):
+    def __init__(self, player_number, max_depth=8, num_threads=4):
+        super().__init__(player_number, max_depth)
+        self.num_threads = num_threads
+        self.thread_pool = ThreadPoolExecutor(max_workers=num_threads)
+    
+    def get_best_move(self, board):
+        self.nodes_searched = 0
+        legal_moves = [col for col in range(board.width) 
+                      if board.heights[col] < board.height]
+        
+        if sum(board.heights) == 0:
+            empty_hash = hash(str(np.zeros((6, 7))))
+            return self.memory.opening_book.get(empty_hash, 3)
+        
+        results = []
+        futures = {}
+        
+        for move in legal_moves:
+            future = self.thread_pool.submit(
+                self._evaluate_move_parallel, 
+                board, 
+                move
+            )
+            futures[future] = move
+        
+        for future in concurrent.futures.as_completed(futures):
+            move = futures[future]
+            try:
+                score = future.result()
+                results.append((move, score))
+            except Exception as e:
+                print(f"Error evaluating move {move}: {e}")
+                results.append((move, -float('inf')))
+        
+        if not results:
+            return 3 
+        
+        best_move, best_score = max(results, key=lambda x: x[1])
+        
+        self.memory.history[(board.current_player, best_move)] += 1
+        
+        return best_move
+    
+    def _evaluate_move_parallel(self, board, move):
+        test_board = self._copy_board(board)
+        test_board.make_move(move)
+
+        return self._thread_alpha_beta(
+            test_board, 
+            self.max_depth - 1, 
+            -float('inf'), 
+            float('inf'), 
+            maximizing_player=(test_board.current_player != self.player)
+        )
+
+class HybridAI(ThreadEnhancedAI):
+    def __init__(self, player_number, max_depth=8, use_threading=True, num_threads=4):
+        super().__init__(player_number, max_depth)
+        self.use_threading = use_threading
+        if use_threading:
+            self.threaded_ai = ThreadedEnhancedAI(player_number, max_depth, num_threads)
+    
+    def get_best_move(self, board):
+        if self.use_threading:
+            return self.threaded_ai.get_best_move(board)
+        else:
+            return super().get_best_move(board)        
