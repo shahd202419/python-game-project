@@ -1,189 +1,245 @@
 import numpy as np
 from collections import defaultdict
-import concurrent.futures
-from concurrent.futures import ThreadPoolExecutor
+import time
+
 class ThreadMemory:
     def __init__(self): 
         self.transposition_table = {}
-        self.killer_moves = [[] for _ in range(100)]
+        self.killer_moves = [[] for _ in range(20)]
         self.history = defaultdict(int)
         self.opening_book = {}
         empty_hash = hash(str(np.zeros((6, 7))))
         self.opening_book[empty_hash] = 3
 
 class ThreadEnhancedAI:
-    def __init__(self, player_number, max_depth=8): 
+    def __init__(self, player_number, max_depth=6):
         self.player = player_number
         self.max_depth = max_depth
         self.memory = ThreadMemory()
         self.nodes_searched = 0
-    
+        self.time_limit = 2.0
+
     def get_best_move(self, board):
+        start_time = time.time()
         self.nodes_searched = 0
-        
-        legal_moves = [col for col in range(board.width) 
-                      if board.heights[col] < board.height]
-        
+        legal_moves = [col for col in range(board.width) if board.heights[col] < board.height]
+        if not legal_moves:
+            return 3
         if sum(board.heights) == 0:
-            empty_hash = hash(str(np.zeros((6, 7))))
-            return self.memory.opening_book.get(empty_hash, 3)
-        
-        ordered_moves = self._order_moves(board, legal_moves)
+            return 3
+        for move in legal_moves:
+            if self.is_winning_move(board, move, self.player):
+                return move
+        opponent = 3 - self.player
+        for move in legal_moves:
+            if self.is_winning_move(board, move, opponent):
+                return move
+        ordered_moves = self._order_moves_smart(board, legal_moves)
         best_move = ordered_moves[0]
-        best_value = -float('inf')
         alpha = -float('inf')
         beta = float('inf')
-        
-        for move in ordered_moves:
-            test_board = self._copy_board(board)
-            test_board.make_move(move)
-            move_value = self._thread_alpha_beta(test_board, self.max_depth - 1, alpha, beta, False)
-            
-            if move_value > best_value:
-                best_value = move_value
-                best_move = move
-                alpha = max(alpha, best_value)
-        
-        return best_move
-    
-    def _thread_alpha_beta(self, board, depth, alpha, beta, maximizing_player):
-        self.nodes_searched += 1
-        original_alpha = alpha
-        
-        winner = self._check_winner(board)
-        if winner != 0:
-            return 10000 if winner == self.player else -10000
-        
-        if depth == 0:
-            return self._evaluate_board(board)
-        
-        board_hash = board.hash_board()
-        tt_entry = self.memory.transposition_table.get(board_hash)
-        
-        if tt_entry and tt_entry['depth'] >= depth:
-            if tt_entry['flag'] == 'EXACT':
-                return tt_entry['score']
-            elif tt_entry['flag'] == 'LOWER':
-                alpha = max(alpha, tt_entry['score'])
-            elif tt_entry['flag'] == 'UPPER':
-                beta = min(beta, tt_entry['score'])
-            
-            if alpha >= beta:
-                return tt_entry['score']
-        
-        legal_moves = [col for col in range(board.width) 
-                      if board.heights[col] < board.height]
-        ordered_moves = self._order_moves(board, legal_moves)
-        
-        if maximizing_player:
-            best_score = -float('inf')
+        for depth in range(1, min(7, self.max_depth + 1)):
+            if time.time() - start_time > self.time_limit:
+                break
+            current_best = None
+            current_value = -float('inf')
             for move in ordered_moves:
+                if time.time() - start_time > self.time_limit:
+                    break
                 test_board = self._copy_board(board)
                 test_board.make_move(move)
-                score = self._thread_alpha_beta(test_board, depth - 1, alpha, beta, False)
-                best_score = max(best_score, score)
-                alpha = max(alpha, best_score)
-                
-                if score >= beta:
+                value = self._alpha_beta_pruning(test_board, depth - 1, alpha, beta, False, start_time)
+                if value > current_value:
+                    current_value = value
+                    current_best = move
+                    alpha = max(alpha, value)
+            if current_best is not None:
+                best_move = current_best
+        return best_move
+
+    def _alpha_beta_pruning(self, board, depth, alpha, beta, maximizing_player, start_time):
+        if time.time() - start_time > self.time_limit:
+            return 0
+        self.nodes_searched += 1
+        winner = self._check_winner(board)
+        if winner != 0:
+            if winner == self.player:
+                return 100000 - (self.max_depth - depth)
+            else:
+                return -100000 + (self.max_depth - depth)
+        if depth == 0:
+            return self._evaluate_board_advanced(board)
+        legal_moves = [col for col in range(board.width) if board.heights[col] < board.height]
+        if not legal_moves:
+            return 0
+        if maximizing_player:
+            value = -float('inf')
+            for move in legal_moves:
+                if time.time() - start_time > self.time_limit:
+                    return value
+                test_board = self._copy_board(board)
+                test_board.make_move(move)
+                value = max(value, self._alpha_beta_pruning(test_board, depth - 1, alpha, beta, False, start_time))
+                if value >= beta:
                     if move not in self.memory.killer_moves[depth]:
                         self.memory.killer_moves[depth].insert(0, move)
                         if len(self.memory.killer_moves[depth]) > 2:
                             self.memory.killer_moves[depth].pop()
                     break
-                
-                if alpha >= beta:
-                    break
+                alpha = max(alpha, value)
+            return value
         else:
-            best_score = float('inf')
-            for move in ordered_moves:
+            value = float('inf')
+            for move in legal_moves:
+                if time.time() - start_time > self.time_limit:
+                    return value
                 test_board = self._copy_board(board)
                 test_board.make_move(move)
-                score = self._thread_alpha_beta(test_board, depth - 1, alpha, beta, True)
-                best_score = min(best_score, score)
-                beta = min(beta, best_score)
-                
-                if alpha >= beta:
+                value = min(value, self._alpha_beta_pruning(test_board, depth - 1, alpha, beta, True, start_time))
+                if value <= alpha:
                     break
-        
-        if best_score <= original_alpha:
-            flag = 'UPPER'
-        elif best_score >= beta:
-            flag = 'LOWER'
-        else:
-            flag = 'EXACT'
-        
-        self.memory.transposition_table[board_hash] = {
-            'score': best_score,
-            'depth': depth,
-            'flag': flag
-        }
-        
-        return best_score
-    
-    def _order_moves(self, board, moves):
+                beta = min(beta, value)
+            return value
+
+    def _order_moves_smart(self, board, moves):
         if not moves:
             return moves
-        
-        center = board.width // 2
-        ordered = sorted(moves, key=lambda x: abs(x - center))
-        
-        depth_index = min(self.max_depth, len(self.memory.killer_moves) - 1)
-        killer_moves = self.memory.killer_moves[depth_index]
-        
-        for killer in killer_moves:
-            if killer in ordered:
-                ordered.remove(killer)
-                ordered.insert(0, killer)
-        
-        ordered.sort(key=lambda move: self.memory.history.get((board.current_player, move), 0), reverse=True)
-        return ordered
-    
-    def _evaluate_board(self, board):
+        scores = []
+        opponent = 3 - self.player
+        for move in moves:
+            score = 0
+            center = board.width // 2
+            score += 10 / (abs(move - center) + 1)
+            if self.is_winning_move(board, move, self.player):
+                score += 1000
+            if self.is_winning_move(board, move, opponent):
+                score += 800
+            threat_score = self._evaluate_threats(board, move, self.player)
+            score += threat_score * 5
+            opponent_threat = self._evaluate_threats(board, move, opponent)
+            score -= opponent_threat * 4
+            row = board.height - 1 - board.heights[move]
+            if row == board.height - 1:
+                score += 20
+            scores.append((move, score))
+        scores.sort(key=lambda x: x[1], reverse=True)
+        return [move for move, _ in scores]
+
+    def _evaluate_threats(self, board, col, player):
+        if board.heights[col] >= board.height:
+            return 0
+        temp_board = self._copy_board(board)
+        temp_board.make_move(col)
+        threats = 0
+        for r in range(temp_board.height):
+            for c in range(temp_board.width - 3):
+                window = [temp_board.board[r][c + i] for i in range(4)]
+                if window.count(player) == 3 and window.count(0) == 1:
+                    threats += 1
+        for c in range(temp_board.width):
+            for r in range(temp_board.height - 3):
+                window = [temp_board.board[r + i][c] for i in range(4)]
+                if window.count(player) == 3 and window.count(0) == 1:
+                    threats += 1
+        for r in range(temp_board.height - 3):
+            for c in range(temp_board.width - 3):
+                window = [temp_board.board[r + i][c + i] for i in range(4)]
+                if window.count(player) == 3 and window.count(0) == 1:
+                    threats += 1
+        for r in range(3, temp_board.height):
+            for c in range(temp_board.width - 3):
+                window = [temp_board.board[r - i][c + i] for i in range(4)]
+                if window.count(player) == 3 and window.count(0) == 1:
+                    threats += 1
+        return threats
+
+    def _evaluate_board_advanced(self, board):
         score = 0
+        opponent = 3 - self.player
         center_col = board.width // 2
-        center_count = sum(1 for row in range(board.height) if board.board[row][center_col] == self.player)
-        score += center_count * 3
-        
         for row in range(board.height):
-            for col in range(board.width - 3):
-                window = [board.board[row][col + i] for i in range(4)]
-                score += self._evaluate_window(window)
-        
+            if board.board[row][center_col] == self.player:
+                score += 6
+            elif board.board[row][center_col] == opponent:
+                score -= 6
+        score += self._evaluate_all_windows(board, self.player) * 2
+        score -= self._evaluate_all_windows(board, opponent) * 2
         for col in range(board.width):
-            for row in range(board.height - 3):
-                window = [board.board[row + i][col] for i in range(4)]
-                score += self._evaluate_window(window)
-        
-        for row in range(board.height - 3):
-            for col in range(board.width - 3):
-                window = [board.board[row + i][col + i] for i in range(4)]
-                score += self._evaluate_window(window)
-        
-        for row in range(3, board.height):
-            for col in range(board.width - 3):
-                window = [board.board[row - i][col + i] for i in range(4)]
-                score += self._evaluate_window(window)
-        
+            height = board.heights[col]
+            if height > 0:
+                row = board.height - height
+                if board.board[row][col] == self.player:
+                    score += 2
+                elif board.board[row][col] == opponent:
+                    score -= 2
+        my_threats = self._count_potential_wins(board, self.player)
+        opponent_threats = self._count_potential_wins(board, opponent)
+        score += (my_threats - opponent_threats) * 50
         return score
-    
-    def _evaluate_window(self, window):
-        ai_count = window.count(self.player)
-        opponent_count = window.count(3 - self.player)
-        
-        if ai_count == 4:
-            return 1000
-        elif opponent_count == 4:
-            return -1000
-        elif ai_count == 3 and opponent_count == 0:
-            return 50
-        elif ai_count == 2 and opponent_count == 0:
+
+    def _evaluate_all_windows(self, board, player):
+        score = 0
+        for r in range(board.height):
+            for c in range(board.width - 3):
+                window = [board.board[r][c + i] for i in range(4)]
+                score += self._evaluate_window_advanced(window, player)
+        for c in range(board.width):
+            for r in range(board.height - 3):
+                window = [board.board[r + i][c] for i in range(4)]
+                score += self._evaluate_window_advanced(window, player)
+        for r in range(board.height - 3):
+            for c in range(board.width - 3):
+                window = [board.board[r + i][c + i] for i in range(4)]
+                score += self._evaluate_window_advanced(window, player)
+        for r in range(3, board.height):
+            for c in range(board.width - 3):
+                window = [board.board[r - i][c + i] for i in range(4)]
+                score += self._evaluate_window_advanced(window, player)
+        return score
+
+    def _evaluate_window_advanced(self, window, player):
+        opponent = 3 - player
+        my_count = window.count(player)
+        opp_count = window.count(opponent)
+        empty_count = window.count(0)
+        if my_count == 4:
+            return 10000
+        elif opp_count == 4:
+            return -10000
+        elif my_count == 3 and empty_count == 1:
+            return 100
+        elif my_count == 2 and empty_count == 2:
             return 10
-        elif opponent_count == 3 and ai_count == 0:
+        elif opp_count == 3 and empty_count == 1:
             return -80
-        elif opponent_count == 2 and ai_count == 0:
+        elif opp_count == 2 and empty_count == 2:
             return -5
         return 0
-    
+
+    def _count_potential_wins(self, board, player):
+        count = 0
+        for r in range(board.height):
+            for c in range(board.width - 3):
+                window = [board.board[r][c + i] for i in range(4)]
+                if window.count(player) == 3 and window.count(0) == 1:
+                    count += 1
+        for c in range(board.width):
+            for r in range(board.height - 3):
+                window = [board.board[r + i][c] for i in range(4)]
+                if window.count(player) == 3 and window.count(0) == 1:
+                    count += 1
+        for r in range(board.height - 3):
+            for c in range(board.width - 3):
+                window = [board.board[r + i][c + i] for i in range(4)]
+                if window.count(player) == 3 and window.count(0) == 1:
+                    count += 1
+        for r in range(3, board.height):
+            for c in range(board.width - 3):
+                window = [board.board[r - i][c + i] for i in range(4)]
+                if window.count(player) == 3 and window.count(0) == 1:
+                    count += 1
+        return count
+
     def _check_winner(self, board):
         for row in range(board.height):
             for col in range(board.width - 3):
@@ -192,7 +248,6 @@ class ThreadEnhancedAI:
                     return 1
                 if all(cell == 2 for cell in window):
                     return 2
-        
         for col in range(board.width):
             for row in range(board.height - 3):
                 window = [board.board[row + i][col] for i in range(4)]
@@ -200,7 +255,6 @@ class ThreadEnhancedAI:
                     return 1
                 if all(cell == 2 for cell in window):
                     return 2
-        
         for row in range(board.height - 3):
             for col in range(board.width - 3):
                 window = [board.board[row + i][col + i] for i in range(4)]
@@ -208,7 +262,6 @@ class ThreadEnhancedAI:
                     return 1
                 if all(cell == 2 for cell in window):
                     return 2
-        
         for row in range(3, board.height):
             for col in range(board.width - 3):
                 window = [board.board[row - i][col + i] for i in range(4)]
@@ -216,9 +269,15 @@ class ThreadEnhancedAI:
                     return 1
                 if all(cell == 2 for cell in window):
                     return 2
-        
         return 0
-    
+
+    def is_winning_move(self, board, col, player):
+        if board.heights[col] >= board.height:
+            return False
+        test_board = self._copy_board(board)
+        test_board.make_move(col)
+        return self._check_winner(test_board) == player
+
     def _copy_board(self, board):
         class SimpleBoard:
             def __init__(self, original):  
@@ -227,7 +286,6 @@ class ThreadEnhancedAI:
                 self.board = original.board.copy()
                 self.heights = original.heights.copy()
                 self.current_player = original.current_player
-            
             def make_move(self, col):
                 if self.heights[col] >= self.height:
                     return False
@@ -236,79 +294,14 @@ class ThreadEnhancedAI:
                 self.heights[col] += 1
                 self.current_player = 3 - self.current_player
                 return True
-            
             def hash_board(self):
                 return hash(str(self.board))
-        
         return SimpleBoard(board)
-    
-    def reset_memory(self):
-        self.memory = ThreadMemory()  
-class ThreadedEnhancedAI(ThreadEnhancedAI):
-    def __init__(self, player_number, max_depth=8, num_threads=4):
-        super().__init__(player_number, max_depth)
-        self.num_threads = num_threads
-        self.thread_pool = ThreadPoolExecutor(max_workers=num_threads)
-    
-    def get_best_move(self, board):
-        self.nodes_searched = 0
-        legal_moves = [col for col in range(board.width) 
-                      if board.heights[col] < board.height]
-        
-        if sum(board.heights) == 0:
-            empty_hash = hash(str(np.zeros((6, 7))))
-            return self.memory.opening_book.get(empty_hash, 3)
-        
-        results = []
-        futures = {}
-        
-        for move in legal_moves:
-            future = self.thread_pool.submit(
-                self._evaluate_move_parallel, 
-                board, 
-                move
-            )
-            futures[future] = move
-        
-        for future in concurrent.futures.as_completed(futures):
-            move = futures[future]
-            try:
-                score = future.result()
-                results.append((move, score))
-            except Exception as e:
-                print(f"Error evaluating move {move}: {e}")
-                results.append((move, -float('inf')))
-        
-        if not results:
-            return 3 
-        
-        best_move, best_score = max(results, key=lambda x: x[1])
-        
-        self.memory.history[(board.current_player, best_move)] += 1
-        
-        return best_move
-    
-    def _evaluate_move_parallel(self, board, move):
-        test_board = self._copy_board(board)
-        test_board.make_move(move)
 
-        return self._thread_alpha_beta(
-            test_board, 
-            self.max_depth - 1, 
-            -float('inf'), 
-            float('inf'), 
-            maximizing_player=(test_board.current_player != self.player)
-        )
+    def reset_memory(self):
+        self.memory = ThreadMemory()
 
 class HybridAI(ThreadEnhancedAI):
-    def __init__(self, player_number, max_depth=8, use_threading=True, num_threads=4):
+    def __init__(self, player_number, max_depth=6, use_threading=False):
         super().__init__(player_number, max_depth)
         self.use_threading = use_threading
-        if use_threading:
-            self.threaded_ai = ThreadedEnhancedAI(player_number, max_depth, num_threads)
-    
-    def get_best_move(self, board):
-        if self.use_threading:
-            return self.threaded_ai.get_best_move(board)
-        else:
-            return super().get_best_move(board)        
