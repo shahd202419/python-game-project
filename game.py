@@ -222,4 +222,327 @@ class ConnectFourGame:
             move_text = font.render(text, True, color)
             self.screen.blit(move_text, (30, 60 + i * 25))
 
+    def toggle_ai_vs_ai(self):
+        if not self.ai_enabled:
+            self.ai_enabled = True
+            if not hasattr(self, 'ai_player1'):
+                self.ai_player1 = HybridAI(player_number=1, max_depth=4, use_threading=False)
+                self.ai_player2 = HybridAI(player_number=2, max_depth=4, use_threading=False)
+        
+        self.ai_vs_ai_mode = not self.ai_vs_ai_mode
+        
+        if self.ai_vs_ai_mode:
+            # إيقاف أي AI تفكير سابق
+            self.ai_thinking = False
+            self.ai_move_pending = False
+            self.ai_vs_ai_running = True
             
+            # بدء وضع AI ضد AI
+            self.start_ai_vs_ai()
+            print("AI vs AI mode: ON")
+        else:
+            # إيقاف وضع AI ضد AI
+            self.ai_vs_ai_running = False
+            if self.ai_vs_ai_thread:
+                self.ai_vs_ai_thread = None
+            print("AI vs AI mode: OFF")  
+
+    def ai_vs_ai_loop(self):
+        """حلقة AI ضد AI"""
+        while self.ai_vs_ai_mode and not self.game_over and self.ai_vs_ai_running:
+            time.sleep(self.ai_vs_ai_speed)
+            
+            # تأكد أننا لازلنا في الوضع المناسب
+            if not self.ai_vs_ai_mode or self.game_over or not self.ai_vs_ai_running:
+                break
+            
+            # اختيار الـAI المناسب للاعب الحالي
+            if self.current_player == 1:
+                ai_to_use = self.ai_player1
+            else:
+                ai_to_use = self.ai_player2
+            
+            # إنشاء نسخة من اللوحة للـAI
+            class BoardForAI:
+                def _init_(self, game):
+                    self.width = game.COLS
+                    self.height = game.ROWS
+                    self.board = game.board.copy()
+                    self.heights = game.heights.copy()
+                    self.current_player = game.current_player
+                
+                def hash_board(self):
+                    return hash(str(self.board))
+            
+            board_wrapper = BoardForAI(self)
+            
+            try:
+                # الحصول على أفضل حركة من الـAI
+                col = ai_to_use.get_best_move(board_wrapper)
+                
+                if col is not None and 0 <= col < self.COLS:
+                    # تنفيذ الحركة في ثريد الواجهة الرئيسية
+                    self.execute_ai_vs_ai_move(col)
+                    
+            except Exception as e:
+                print(f"Error in AI vs AI: {e}")
+                # في حالة خطأ، استمر في المحاولة
+                continue
+
+    def execute_ai_vs_ai_move(self, col):
+        """تنفيذ حركة AI ضد AI (يجب استدعاؤها من ثريد الواجهة الرئيسية)"""
+        # يمكنك استدعاء make_move مباشرة
+        self.make_move(col)
+
+
+    def start_ai_thinking(self):
+        """بدء عملية تفكير الـAI"""
+        if self.ai_thinking or self.ai_move_pending:
+            return
+        
+        self.ai_thinking = True
+        
+        # إنشاء ثريد منفصل للتفكير
+        self.ai_thread = threading.Thread(target=self.calculate_ai_move, daemon=True)
+        self.ai_thread.start()
+
+    def calculate_ai_move(self):
+        """حساب حركة الـAI في ثريد منفصل"""
+        try:
+            # تأخير قصير لمحاكاة التفكير
+            time.sleep(0.1)
+            
+            # إنشاء كائن board للـAI
+            class BoardForAI:
+                def _init_(self, game):
+                    self.width = game.COLS
+                    self.height = game.ROWS
+                    self.board = game.board.copy()
+                    self.heights = game.heights.copy()
+                    self.current_player = game.current_player
+                
+                def hash_board(self):
+                    return hash(str(self.board))
+            
+            board_for_ai = BoardForAI(self)
+            
+            # الحصول على أفضل حركة
+            col = self.ai.get_best_move(board_for_ai)
+            
+            # تخزين النتيجة وتحديد الوقت
+            self.ai_move_column = col
+            self.ai_move_pending = True
+            self.ai_move_time = pygame.time.get_ticks() + self.ai_delay
+            
+        except Exception as e:
+            print(f"AI calculation error: {e}")
+            self.ai_thinking = False
+            self.ai_move_pending = False
+
+    def update(self):
+        """التحديثات في كل إطار"""
+        current_time = pygame.time.get_ticks()
+        
+        # تنفيذ حركة الـAI المعلقة
+        if self.ai_move_pending and current_time >= self.ai_move_time:
+            if self.ai_move_column is not None and 0 <= self.ai_move_column < self.COLS:
+                # تنفيذ الحركة في ثريد الواجهة الرئيسية
+                self.execute_ai_move(self.ai_move_column)
+            
+            # إعادة تعيين المتغيرات
+            self.ai_move_pending = False
+            self.ai_move_column = None
+            self.ai_thinking = False
+
+    def execute_ai_move(self, col):
+        """تنفيذ حركة الـAI"""
+        if self.game_over or self.heights[col] >= self.ROWS:
+            return
+        
+        # تنفيذ الحركة
+        row = self.ROWS - 1 - self.heights[col]
+        self.board[row][col] = self.current_player
+        self.heights[col] += 1
+        self.moves_count += 1
+        
+        # إضافة للتاريخ
+        self.history.append({
+            'col': col,
+            'row': row,
+            'player': self.current_player
+        })
+        
+        # التحقق من الفوز
+        if self.check_winner(self.current_player):
+            self.game_over = True
+            self.winner = self.current_player
+        elif self.moves_count == self.ROWS * self.COLS:
+            self.game_over = True
+            self.winner = -1  # تعادل
+        else:
+            # تبديل اللاعب
+            self.current_player = 3 - self.current_player
+            
+            # إذا بقي دور الـAI (في حالة الأخطاء)، نعيد المحاولة
+            if self.ai_enabled and self.current_player == 2 and not self.game_over:
+                self.start_ai_thinking()
+
+    def draw_players(self):
+        """رسم معلومات اللاعبين"""
+        font_large = pygame.font.SysFont(None, 32)
+        font_small = pygame.font.SysFont(None, 24)
+        
+        # تحديد أسماء وألوان اللاعبين بناءً على الوضع
+        if self.ai_vs_ai_mode:
+            player1_name = "AI 1"
+            player1_color = self.colors['ai']
+            player2_name = "AI 2"
+            player2_color = self.colors['ai']
+        else:
+            player1_name = "Shahd"
+            player1_color = self.colors['player1']
+            player2_name = "AI" if self.ai_enabled else "Searing"
+            player2_color = self.colors['ai'] if self.ai_enabled else self.colors['player2']
+        
+        # اللاعب 1 (يسار)
+        pygame.draw.rect(self.screen, player1_color,
+                        (self.grid_x - 220, self.grid_y, 200, 80),
+                        border_radius=10)
+        
+        name1 = font_large.render(player1_name, True, self.colors['text'])
+        type1 = font_small.render("Red" if self.ai_vs_ai_mode else "Player 1", True, self.colors['text'])
+        self.screen.blit(name1, (self.grid_x - 210, self.grid_y + 15))
+        self.screen.blit(type1, (self.grid_x - 210, self.grid_y + 50))
+        
+        # اللاعب 2 (يمين)
+        pygame.draw.rect(self.screen, player2_color,
+                        (self.grid_x + self.grid_width + 20, self.grid_y, 200, 80),
+                        border_radius=10)
+        
+        name2 = font_large.render(player2_name, True, self.colors['text'])
+        type2 = font_small.render("Yellow" if self.ai_vs_ai_mode else "Player 2", True, self.colors['text'])
+        self.screen.blit(name2, (self.grid_x + self.grid_width + 30, self.grid_y + 15))
+        self.screen.blit(type2, (self.grid_x + self.grid_width + 30, self.grid_y + 50))
+
+    def draw_turn_indicator(self):
+        """رسم مؤشر الدور"""
+        font = pygame.font.SysFont(None, 28)
+        
+        if self.ai_vs_ai_mode:
+            text = "AI vs AI Mode"
+            color = self.colors['ai_vs_ai']
+        elif self.ai_thinking:
+            text = "AI is thinking..."
+            color = self.colors['ai']
+        elif self.game_over:
+            if self.winner == 1:
+                text = "AI 1 Wins!" if self.ai_vs_ai_mode else "Shahd Wins!"
+                color = self.colors['ai'] if self.ai_vs_ai_mode else self.colors['player1']
+            elif self.winner == 2:
+                text = "AI 2 Wins!" if self.ai_vs_ai_mode else ("AI Wins!" if self.ai_enabled else "Searing Wins!")
+                color = self.colors['ai'] if self.ai_vs_ai_mode or self.ai_enabled else self.colors['player2']
+            else:
+                text = "It's a Draw!"
+                color = (255, 215, 0)  # ذهبي
+        elif self.current_player == 1:
+            text = "AI 1's Turn" if self.ai_vs_ai_mode else "Shahd's Turn"
+            color = self.colors['ai'] if self.ai_vs_ai_mode else self.colors['player1']
+        else:
+            text = "AI 2's Turn" if self.ai_vs_ai_mode else ("AI's Turn" if self.ai_enabled else "Searing's Turn")
+            color = self.colors['ai'] if self.ai_vs_ai_mode or self.ai_enabled else self.colors['player2']
+        
+        text_surface = font.render(text, True, color)
+        x = self.WIDTH // 2 - text_surface.get_width() // 2
+        y = self.grid_y - 40
+        self.screen.blit(text_surface, (x, y))
+
+    def draw_thinking_indicator(self):
+        """رسم مؤشر تفكير الـAI"""
+        # رسم نقاط متحركة
+        current_time = pygame.time.get_ticks()
+        dot_offset = (current_time // 300) % 4
+        
+        center_x = self.WIDTH // 2
+        center_y = self.grid_y - 80
+        
+        for i in range(3):
+            x = center_x - 30 + i * 20
+            y = center_y
+            
+            # تغيير حجم النقطة بناءً على الوقت
+            dot_size = 5
+            if i == dot_offset:
+                dot_size = 8
+            
+            pygame.draw.circle(self.screen, self.colors['ai'], (x, y), dot_size)
+
+    def draw_winner(self):
+        """رسم إعلان الفائز"""
+        if not self.game_over:
+            return
+        
+        # خلفية شفافة
+        overlay = pygame.Surface((self.WIDTH, self.HEIGHT), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 150))
+        self.screen.blit(overlay, (0, 0))
+        
+        # إطار الفائز
+        frame_width = 500
+        frame_height = 300
+        frame_x = (self.WIDTH - frame_width) // 2
+        frame_y = (self.HEIGHT - frame_height) // 2
+        
+        # تحديد الفائز بناءً على الوضع
+        if self.winner == 1:
+            # اللاعب 1 فاز
+            if self.ai_vs_ai_mode:
+                # وضع AI ضد AI
+                color = self.colors['ai']
+                text = "AI 1 Wins!"
+            else:
+                # وضع عادي
+                color = self.colors['player1']
+                text = "Shahd Wins!"
+        elif self.winner == 2:
+            # اللاعب 2 فاز
+            if self.ai_vs_ai_mode:
+                # وضع AI ضد AI
+                color = self.colors['ai']
+                text = "AI 2 Wins!"
+            elif self.ai_enabled:
+                # وضع AI عادي
+                color = self.colors['ai']
+                text = "AI Wins!"
+            else:
+                # وضع لاعب ضد لاعب
+                color = self.colors['player2']
+                text = "Searing Wins!"
+        else:
+            # تعادل
+            color = (255, 215, 0)  # ذهبي
+            text = "It's a Draw!"
+        
+        pygame.draw.rect(self.screen, color,
+                        (frame_x, frame_y, frame_width, frame_height),
+                        border_radius=20)
+        
+        pygame.draw.rect(self.screen, (255, 255, 255),
+                        (frame_x, frame_y, frame_width, frame_height),
+                        5, border_radius=20)
+        
+        # النص
+        font_big = pygame.font.SysFont(None, 64)
+        font_small = pygame.font.SysFont(None, 32)
+        
+        winner_text = font_big.render(text, True, (255, 255, 255))
+        restart_text = font_small.render("Press R to play again", True, (220, 220, 220))
+        
+        self.screen.blit(winner_text,
+                        (self.WIDTH//2 - winner_text.get_width()//2,
+                         frame_y + 80))
+        
+        self.screen.blit(restart_text,
+                        (self.WIDTH//2 - restart_text.get_width()//2,
+                         frame_y + 180))
+
+                         
